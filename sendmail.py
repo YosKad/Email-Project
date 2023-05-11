@@ -1,75 +1,76 @@
 import os
 import re
 import sendgrid
+from sendgrid.helpers.mail import Mail, Email, To, Content
 from dotenv import load_dotenv
-from sendgrid.helpers.mail import Mail
 from bs4 import BeautifulSoup
-from jinja2 import Template
+import imaplib
+import email
 
 load_dotenv()
 
-# Set SendGrid API key
 SENDGRID_API_KEY = os.getenv('SENDGRID_API_KEY')
-sg = sendgrid.SendGridAPIClient(api_key=SENDGRID_API_KEY)
+EMAIL_ADDRESS = os.getenv('EMAIL_ADDRESS')
+EMAIL_PASSWORD = os.getenv('EMAIL_PASSWORD')
 
-# Email validation function
-def validate_email(email):
-    response = sg.client.validation.email.get(query_params={'email': email})
-    return response.status_code == 200
 
-# Email filtering and sorting function
-def filter_emails(emails, keyword):
-    filtered_emails = []
-    for email in emails:
-        subject = email['subject']
-        body = email['body']
-        if keyword in subject or keyword in body:
-            filtered_emails.append(email)
-    filtered_emails.sort(key=lambda x: x['date'], reverse=True)
-    return filtered_emails
+def send_email(subject, body, to_email):
+    sg = sendgrid.SendGridAPIClient(api_key=SENDGRID_API_KEY)
+    from_email = Email(EMAIL_ADDRESS)
+    to_email = To(to_email)
+    content = Content("text/plain", body)
+    message = Mail(from_email, to_email, subject, content)
+    response = sg.client.mail.send.post(request_body=message.get())
+    print(response.status_code)
 
-# Email response generation function
-def generate_response(email):
-    name = email['sender']
-    subject = email['subject']
-    message = email['body']
-    template = Template("""\
-        Dear {{ name }},
-        Thank you for your email with the subject "{{ subject }}". We have received your message and will get back to you as soon as possible.
-        Best regards,
-        Email Filtering Tool
-    """)
-    return template.render(name=name, subject=subject)
 
-# Main function
-def main():
-    # Retrieve incoming emails using SendGrid's API
-    response = sg.client.inbound_emails.get()
-    emails = []
-    for email in response.body:
-        # Parse email contents using Beautiful Soup
-        soup = BeautifulSoup(email['html'], 'html.parser')
-        sender = soup.find('span', {'data-test-id': 'previewFromLine'}).text
-        subject = soup.find('h2', {'data-test-id': 'previewSubject'}).text
-        date = soup.find('time', {'data-test-id': 'emailReceivedDate'}).text
-        body = soup.find('div', {'data-test-id': 'emailBody'}).text
-        # Validate email address
-        if validate_email(sender):
-            emails.append({'sender': sender, 'subject': subject, 'date': date, 'body': body})
-    # Filter and sort emails based on keyword
-    keyword = 'important'
-    filtered_emails = filter_emails(emails, keyword)
-    # Generate response emails and send using SendGrid's API
-    for email in filtered_emails:
-        recipient = email['sender']
-        response = generate_response(email)
-        message = Mail(
-            from_email='your_email@example.com',
-            to_emails=recipient,
-            subject='Re: ' + email['subject'],
-            html_content=response)
-        response = sg.client.mail.send.post(request_body=message.get())
-        print(response.status_code)
+def validate_email(email_address):
+    pattern = r'^([a-zA-Z0-9._%-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,})$'
+    if re.match(pattern, email_address):
+        return True
+    return False
+
+
+def get_latest_email(keyword):
+    mail = imaplib.IMAP4_SSL('imap.gmail.com')
+    mail.login(EMAIL_ADDRESS, EMAIL_PASSWORD)
+    mail.select('inbox')
+    _, search_data = mail.search(None, 'ALL')
+    mail_ids = search_data[0]
+    latest_email_id = mail_ids.split()[-1]
+    _, data = mail.fetch(latest_email_id, '(RFC822)')
+    raw_email = data[0][1]
+    email_message = email.message_from_bytes(raw_email)
+    subject = email_message['Subject']
+    if keyword in subject:
+        for part in email_message.walk():
+            if part.get_content_type() == "text/plain":
+                body = part.get_payload(decode=True).decode()
+                return (subject, body)
+    return None
+
 
 if __name__ == '__main__':
-    main()
+    sendgrid_api_key = input('Enter your SendGrid API key: ')
+    email_address = input(
+        'Enter the email address to send the test email to: ')
+    keyword = input('Enter the keyword to filter the email: ')
+
+    if not validate_email(email_address):
+        print('Invalid email address')
+        exit()
+
+    sg = sendgrid.SendGridAPIClient(api_key=sendgrid_api_key)
+    from_email = Email(EMAIL_ADDRESS)
+    to_email = To(email_address)
+    content = Content("text/plain", "Test email from SendGrid")
+    message = Mail(from_email, to_email, "SendGrid Test Email", content)
+    response = sg.client.mail.send.post(request_body=message.get())
+    print(response.status_code)
+
+    latest_email = get_latest_email(keyword)
+    if latest_email is None:
+        print(f"No matching emails found with keyword '{keyword}'")
+    else:
+        subject, body = latest_email
+        print(f"Latest email found with subject '{subject}' and body '{body}'")
